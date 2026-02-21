@@ -424,6 +424,48 @@ minikube service nginx-service --url
 
 ---
 
+### Optional Week 1 Labs (Recommended)
+
+Use these labs if you want stronger hands-on repetition before Week 2.
+
+| Lab | Time | Goal | Done When |
+|-----|------|------|-----------|
+| 1. `kubectl` Fluency Drill | 30-45 min | Build CLI muscle memory with core verbs. | You can run `apply -> get -> describe -> logs -> exec -> delete` on a test workload without checking notes. |
+| 2. Failure + Recovery | 45 min | Learn fast debugging from Pod states/events. | You intentionally trigger `ImagePullBackOff`, use `kubectl describe` and `kubectl get events`, fix the image tag, and return to `Running`. |
+| 3. Rollout + Rollback | 30 min | Understand safe Deployment changes. | You change an image version, watch `kubectl rollout status`, then `kubectl rollout undo` and confirm history with `kubectl rollout history`. |
+| 4. Service Debugging | 45 min | Diagnose connectivity issues caused by selectors/endpoints. | You create a Service with a wrong selector, verify `ENDPOINTS` is empty, fix labels/selector, and curl succeeds from another Pod. |
+| 5. Declarative Workflow Drill | 30 min | Build safer YAML-first habits. | You generate manifest scaffolds with `--dry-run=client -o yaml`, review with `kubectl diff -f`, and only then `kubectl apply -f`. |
+| 6. Basic Observability | 20-30 min | Read real cluster behavior signals. | You inspect recent events sorted by timestamp and check node/pod usage with `kubectl top` (metrics-server enabled). |
+| 7. Week 1 Deliverable | 30 min | Consolidate what you learned into reusable assets. | You have a `/week1` folder with `pod.yaml`, `deployment.yaml`, `service.yaml`, plus a short troubleshooting note with common failures and fixes. |
+
+**Suggested command set for Labs 1-6:**
+
+```bash
+# Events and troubleshooting
+kubectl get events --sort-by=.lastTimestamp
+kubectl describe pod <pod-name>
+
+# Rollout workflow
+kubectl set image deployment/<name> <container>=<image:tag>
+kubectl rollout status deployment/<name>
+kubectl rollout history deployment/<name>
+kubectl rollout undo deployment/<name>
+
+# Service debugging
+kubectl get svc
+kubectl get endpoints
+kubectl get pods --show-labels
+
+# Resource visibility
+kubectl top nodes
+kubectl top pods
+```
+
+**Exit criteria before Week 2:**  
+You can deploy a small app from YAML, expose it via Service, diagnose one failure scenario, and explain what happened using events and rollout history.
+
+---
+
 ### Week 1 Checkpoint
 
 By end of Week 1, you should be able to:
