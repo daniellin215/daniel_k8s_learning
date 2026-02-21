@@ -74,15 +74,72 @@ Kubernetes (K8s) is a container orchestration platform that automates deployment
 | **kubelet** | Agent on each node that ensures containers are running | pm2 per machine |
 | **kube-proxy** | Handles networking rules for Services on each node | iptables/networking layer |
 
+#### Hands-On: Trace a `kubectl` Request Flow
+
+Use this mini-lab to trace a real request:
+`kubectl` -> API Server -> `etcd` -> Scheduler -> kubelet
+
+**1. Confirm which API Server your `kubectl` talks to**
+
+```bash
+kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}{"\n"}'
+```
+
+**What to notice:** this is the control-plane endpoint every `kubectl` command calls.
+
+**2. Run one command with verbose client logs**
+
+```bash
+kubectl --v=8 get namespaces
+```
+
+**What to notice:** request URL, HTTP verb, and response code in debug output.  
+This is direct evidence of `kubectl` calling the API Server.
+
+**3. Create a Deployment to trigger scheduling**
+
+```bash
+kubectl create deployment flow-demo --image=nginx:1.25 --replicas=1
+kubectl get pods -l app=flow-demo -w
+```
+
+**What to notice:** Pod moves `Pending` -> `Running` after scheduling and kubelet startup.
+
+**4. Inspect Pod events (best single view of the flow)**
+
+```bash
+POD=$(kubectl get pods -l app=flow-demo -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod "$POD"
+```
+
+**What to notice in Events:**
+- `default-scheduler`: "Successfully assigned ..." (Scheduler picked a node)
+- `kubelet`: Pulling/Created/Started container (node agent executed it)
+
+**5. Verify API Server health checks include etcd**
+
+```bash
+kubectl get --raw='/readyz?verbose' | grep etcd
+```
+
+**What to notice:** `etcd` readiness appears in API Server checks.  
+You do not call `etcd` directly with `kubectl`; the API Server persists desired state into `etcd`.
+
+**6. Optional cleanup**
+
+```bash
+kubectl delete deployment flow-demo
+```
+
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| Kubernetes Components | Official Docs | 30 min | https://kubernetes.io/docs/concepts/overview/components/ |
-| What is Kubernetes? | Official Docs | 20 min | https://kubernetes.io/docs/concepts/overview/what-is-kubernetes/ |
-| Kubernetes: The Documentary | Video | 55 min | https://www.youtube.com/watch?v=BE77h7dmoQU |
-| The Illustrated Children's Guide to Kubernetes | Interactive | 15 min | https://www.cncf.io/phippy/the-childrens-illustrated-guide-to-kubernetes/ |
-| Kubernetes The Hard Way | Deep Dive | 4+ hrs | https://github.com/kelseyhightower/kubernetes-the-hard-way |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| Kubernetes Components | Official Docs | 30 min | Builds the core control-plane vs worker-node mental model. | Trace one request flow: `kubectl` -> API Server -> `etcd` -> Scheduler -> kubelet. | https://kubernetes.io/docs/concepts/overview/components/ |
+| What is Kubernetes? | Official Docs | 20 min | Clarifies desired state and reconciliation, the foundation for every later week. | Compare what K8s solves vs Docker Compose/pm2 workflows you already know. | https://kubernetes.io/docs/concepts/overview/what-is-kubernetes/ |
+| Kubernetes: The Documentary | Video | 55 min | Gives historical context on why Kubernetes and CNCF standards emerged. | Note the operational tradeoffs that come with orchestration at scale. | https://www.youtube.com/watch?v=BE77h7dmoQU |
+| The Illustrated Children's Guide to Kubernetes | Interactive | 15 min | Fast visual model before reading deeper docs. | Translate each metaphor back to real terms: Pod, Node, Control Plane, Cluster. | https://www.cncf.io/phippy/the-childrens-illustrated-guide-to-kubernetes/ |
+| Kubernetes The Hard Way | Deep Dive | 4+ hrs | Deep architecture reference that becomes valuable in Weeks 4-8. | Skim PKI, bootstrap, and control-plane setup now; save full lab for later. | https://github.com/kelseyhightower/kubernetes-the-hard-way |
 
 ---
 
@@ -155,12 +212,12 @@ minikube dashboard
 
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| minikube Start Guide | Official Docs | 30 min | https://minikube.sigs.k8s.io/docs/start/ |
-| kubectl Cheat Sheet | Reference | Bookmark | https://kubernetes.io/docs/reference/kubectl/cheatsheet/ |
-| kubectl Overview | Official Docs | 20 min | https://kubernetes.io/docs/reference/kubectl/ |
-| kubectl Book | Free eBook | 2 hrs | https://kubectl.docs.kubernetes.io/ |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| minikube Start Guide | Official Docs | 30 min | Canonical setup path for a stable local cluster baseline. | Pick driver, CPU/memory sizing, and verification steps for your OS. | https://minikube.sigs.k8s.io/docs/start/ |
+| kubectl Cheat Sheet | Reference | Bookmark | Daily command reference you will reuse throughout the plan. | Practice `get`, `describe`, `logs`, `exec`, `apply`, `delete`, and `-n`/`-o` flags. | https://kubernetes.io/docs/reference/kubectl/cheatsheet/ |
+| kubectl Overview | Official Docs | 20 min | Explains command structure and resource-centric API interactions. | Understand imperative vs declarative usage and how resource types map to commands. | https://kubernetes.io/docs/reference/kubectl/ |
+| kubectl Book | Free eBook | 2 hrs | Structured deep dive for long-term CLI fluency. | Read intro + context/namespace navigation first; bookmark troubleshooting chapters. | https://kubectl.docs.kubernetes.io/ |
 
 ---
 
@@ -356,14 +413,14 @@ minikube service nginx-service --url
 
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| Pods Overview | Official Docs | 30 min | https://kubernetes.io/docs/concepts/workloads/pods/ |
-| Deployments | Official Docs | 45 min | https://kubernetes.io/docs/concepts/workloads/controllers/deployment/ |
-| Services | Official Docs | 45 min | https://kubernetes.io/docs/concepts/services-networking/service/ |
-| Service Discovery | Official Docs | 20 min | https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/ |
-| Nana K8s Crash Course | Video | 1 hr | https://www.youtube.com/watch?v=s_o8dwzRlu4 |
-| K8s Basics Interactive Tutorial | Interactive | 1 hr | https://kubernetes.io/docs/tutorials/kubernetes-basics/ |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| Pods Overview | Official Docs | 30 min | Teaches Pod lifecycle, container grouping, and execution model. | Learn phases, restart behavior, and when sidecars make sense. | https://kubernetes.io/docs/concepts/workloads/pods/ |
+| Deployments | Official Docs | 45 min | Core controller for resilient app rollout and self-healing. | Practice `rollout status/history/undo` and update strategy concepts. | https://kubernetes.io/docs/concepts/workloads/controllers/deployment/ |
+| Services | Official Docs | 45 min | Provides stable connectivity despite ephemeral Pod IPs. | Compare ClusterIP/NodePort/LoadBalancer and selector-based routing. | https://kubernetes.io/docs/concepts/services-networking/service/ |
+| Service Discovery | Official Docs | 20 min | Explains internal DNS and naming conventions across namespaces. | Memorize service FQDN pattern and namespace DNS search behavior. | https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/ |
+| Nana K8s Crash Course | Video | 1 hr | Visual end-to-end recap with practical CLI examples. | Watch Pod/Deployment/Service segments and replay commands in minikube. | https://www.youtube.com/watch?v=s_o8dwzRlu4 |
+| K8s Basics Interactive Tutorial | Interactive | 1 hr | Hands-on reinforcement in a guided sandbox. | Complete modules through Services/replication before moving to Week 2. | https://kubernetes.io/docs/tutorials/kubernetes-basics/ |
 
 ---
 
