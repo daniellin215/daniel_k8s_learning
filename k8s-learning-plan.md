@@ -592,12 +592,63 @@ spec:
             path: default.conf
 ```
 
+#### Hands-On: Trace ConfigMap Consumption and Update Behavior
+
+Use this lab to verify how config reaches a running workload and what happens when values change.
+
+**1. Create a ConfigMap and wire it into a Deployment as env vars**
+
+```bash
+kubectl create configmap app-settings \
+  --from-literal=LOG_LEVEL=info \
+  --from-literal=FEATURE_FLAG=false
+
+kubectl create deployment cm-env-demo --image=busybox:1.36 -- sleep 3600
+kubectl set env deployment/cm-env-demo --from=configmap/app-settings
+kubectl rollout status deployment/cm-env-demo
+```
+
+**2. Verify values inside the Pod**
+
+```bash
+POD=$(kubectl get pods -l app=cm-env-demo -o jsonpath='{.items[0].metadata.name}')
+kubectl exec "$POD" -- printenv | grep -E 'LOG_LEVEL|FEATURE_FLAG'
+```
+
+**What to notice:** ConfigMap keys become environment variables in the container.
+
+**3. Update the ConfigMap and compare behavior**
+
+```bash
+kubectl create configmap app-settings \
+  --from-literal=LOG_LEVEL=debug \
+  --from-literal=FEATURE_FLAG=true \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Existing pod still has old env var values
+kubectl exec "$POD" -- printenv | grep -E 'LOG_LEVEL|FEATURE_FLAG'
+
+# Restart deployment to pick up updated env vars
+kubectl rollout restart deployment/cm-env-demo
+kubectl rollout status deployment/cm-env-demo
+```
+
+**What to notice:** env var values are captured at container start; rollout restart is required to load updated values.
+
+**4. Optional cleanup**
+
+```bash
+kubectl delete deployment cm-env-demo
+kubectl delete configmap app-settings
+```
+
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| ConfigMaps | Official Docs | 30 min | https://kubernetes.io/docs/concepts/configuration/configmap/ |
-| Configure Pods with ConfigMaps | Tutorial | 45 min | https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/ |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| ConfigMaps | Official Docs | 30 min | Core primitive for externalized non-secret config. | Understand object size limits, naming, and update semantics. | https://kubernetes.io/docs/concepts/configuration/configmap/ |
+| Configure Pods with ConfigMaps | Tutorial | 45 min | Practical patterns for env vars and mounted files. | Reproduce both `envFrom` and volume mount patterns locally. | https://kubernetes.io/docs/tasks/configure-pod-container/configure-pod-configmap/ |
+| Immutable ConfigMaps | Official Docs | 15 min | Prevents accidental runtime config drift in stable environments. | Learn when to mark ConfigMaps immutable and version new names instead. | https://kubernetes.io/docs/concepts/configuration/configmap/#immutable-configmaps |
 
 ---
 
@@ -679,15 +730,79 @@ spec:
         secretName: db-credentials
 ```
 
+#### Hands-On: Trace Secret Consumption and Rotation
+
+Use this lab to understand safe Secret usage and what rotates automatically.
+
+**1. Create a Secret from plain values (converted by API Server)**
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials-lab
+type: Opaque
+stringData:
+  username: appuser
+  password: initial-pass
+EOF
+```
+
+**2. Consume it as env vars in a Deployment**
+
+```bash
+kubectl create deployment secret-env-demo --image=busybox:1.36 -- sleep 3600
+kubectl set env deployment/secret-env-demo --from=secret/db-credentials-lab
+kubectl rollout status deployment/secret-env-demo
+```
+
+**3. Verify values without printing entire secret objects**
+
+```bash
+POD=$(kubectl get pods -l app=secret-env-demo -o jsonpath='{.items[0].metadata.name}')
+kubectl exec "$POD" -- sh -c 'echo "DB username=$username"'
+```
+
+**What to notice:** app reads secret values as env vars, but avoid logging sensitive fields in real apps.
+
+**4. Rotate the Secret and observe behavior**
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials-lab
+type: Opaque
+stringData:
+  username: appuser
+  password: rotated-pass
+EOF
+
+# Existing pod still has old env var values until restart
+kubectl rollout restart deployment/secret-env-demo
+kubectl rollout status deployment/secret-env-demo
+```
+
+**What to notice:** Secret updates do not refresh env vars in-place; restart workloads after rotation.
+
+**5. Optional cleanup**
+
+```bash
+kubectl delete deployment secret-env-demo
+kubectl delete secret db-credentials-lab
+```
+
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| Secrets | Official Docs | 30 min | https://kubernetes.io/docs/concepts/configuration/secret/ |
-| Managing Secrets | Official Docs | 30 min | https://kubernetes.io/docs/tasks/configmap-secret/ |
-| Encrypting Secrets at Rest | Official Docs | 20 min | https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/ |
-| External Secrets Operator | GitHub | Reference | https://github.com/external-secrets/external-secrets |
-| Sealed Secrets | GitHub | Reference | https://github.com/bitnami-labs/sealed-secrets |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| Secrets | Official Docs | 30 min | Baseline behavior, types, and usage patterns. | Learn Secret types and consumption options (env, volume, projected). | https://kubernetes.io/docs/concepts/configuration/secret/ |
+| Managing Secrets | Official Docs | 30 min | Hands-on creation and mounting examples. | Practice least-privilege exposure to only required containers/keys. | https://kubernetes.io/docs/tasks/configmap-secret/ |
+| Encrypting Secrets at Rest | Official Docs | 20 min | Required production hardening for API-server datastore. | Understand encryption providers and key rotation workflow. | https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/ |
+| External Secrets Operator | GitHub | Reference | Standard pattern to sync secrets from external stores. | Review architecture and CRDs; map to cloud secret managers. | https://github.com/external-secrets/external-secrets |
+| Sealed Secrets | GitHub | Reference | GitOps-friendly encrypted Secret manifest workflow. | Learn controller-based decryption model and key-management tradeoffs. | https://github.com/bitnami-labs/sealed-secrets |
 
 ---
 
@@ -817,14 +932,92 @@ spec:
     configmaps: "20"
 ```
 
+#### Hands-On: Trace Namespace Policy Enforcement (LimitRange + ResourceQuota)
+
+Use this lab to watch admission control reject non-compliant workloads.
+
+**1. Create an isolated namespace with limits**
+
+```bash
+kubectl create namespace team-a
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: team-a-default-limits
+  namespace: team-a
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: "250m"
+        memory: "256Mi"
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+EOF
+
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-a-quota
+  namespace: team-a
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: "2Gi"
+    limits.cpu: "4"
+    limits.memory: "4Gi"
+    pods: "10"
+EOF
+
+kubectl describe resourcequota team-a-quota -n team-a
+kubectl describe limitrange team-a-default-limits -n team-a
+```
+
+**2. Try creating a Pod that exceeds quota**
+
+```bash
+kubectl run quota-breaker \
+  --image=busybox:1.36 \
+  --restart=Never \
+  --requests='cpu=5,memory=9Gi' \
+  --limits='cpu=5,memory=9Gi' \
+  -n team-a -- sleep 3600
+```
+
+**What to notice:** API Server rejects admission with `Forbidden` and quota details.
+
+**3. Create a compliant Pod and verify it schedules**
+
+```bash
+kubectl run quota-ok \
+  --image=busybox:1.36 \
+  --restart=Never \
+  --requests='cpu=250m,memory=256Mi' \
+  --limits='cpu=500m,memory=512Mi' \
+  -n team-a -- sleep 3600
+
+kubectl get pod quota-ok -n team-a
+kubectl describe resourcequota team-a-quota -n team-a
+```
+
+**4. Optional cleanup**
+
+```bash
+kubectl delete pod quota-ok -n team-a
+kubectl delete namespace team-a
+```
+
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| Namespaces | Official Docs | 20 min | https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/ |
-| Resource Quotas | Official Docs | 30 min | https://kubernetes.io/docs/concepts/policy/resource-quotas/ |
-| Limit Ranges | Official Docs | 20 min | https://kubernetes.io/docs/concepts/policy/limit-range/ |
-| Managing Resources | Official Docs | 30 min | https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| Namespaces | Official Docs | 20 min | Foundation for tenant/environment isolation. | Understand scope boundaries and naming patterns across teams/envs. | https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/ |
+| Resource Quotas | Official Docs | 30 min | Prevents noisy-neighbor exhaustion at namespace level. | Learn hard limits and how quota usage is calculated and reported. | https://kubernetes.io/docs/concepts/policy/resource-quotas/ |
+| Limit Ranges | Official Docs | 20 min | Enforces per-container defaults and guardrails. | Focus on `default` vs `defaultRequest` and min/max constraints. | https://kubernetes.io/docs/concepts/policy/limit-range/ |
+| Managing Resources | Official Docs | 30 min | Explains scheduler/runtime behavior for requests and limits. | Connect CPU throttling and OOMKilled outcomes to configured limits. | https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/ |
 
 ---
 
@@ -914,12 +1107,108 @@ app.get('/ready', async (req, res) => {
 });
 ```
 
+#### Hands-On: Trace Probe Failures to Service Endpoints
+
+Use this lab to see how readiness affects live traffic routing.
+
+**1. Deploy a probe demo and expose it**
+
+```bash
+kubectl create deployment probe-demo --image=nginx:1.25 --replicas=1
+kubectl expose deployment probe-demo --port=80 --target-port=80
+```
+
+**2. Add an intentionally broken readiness probe**
+
+```bash
+kubectl patch deployment probe-demo --type='json' -p='[
+  {"op":"add","path":"/spec/template/spec/containers/0/readinessProbe","value":{
+    "httpGet":{"path":"/not-ready","port":80},
+    "initialDelaySeconds":2,
+    "periodSeconds":5,
+    "failureThreshold":2
+  }}
+]'
+```
+
+**3. Observe pod readiness and endpoint removal**
+
+```bash
+kubectl get pods -l app=probe-demo -w
+kubectl get endpoints probe-demo
+kubectl describe pods -l app=probe-demo
+```
+
+**What to notice:** Pod stays `0/1 Ready`; Service endpoints are empty because readiness fails.
+
+**4. Fix the probe and confirm traffic eligibility**
+
+```bash
+kubectl patch deployment probe-demo --type='json' -p='[
+  {"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/"}
+]'
+
+kubectl rollout status deployment/probe-demo
+kubectl get endpoints probe-demo
+```
+
+**What to notice:** Endpoint appears once readiness succeeds; Service can route traffic again.
+
+**5. Optional cleanup**
+
+```bash
+kubectl delete svc probe-demo
+kubectl delete deployment probe-demo
+```
+
 #### Reading Materials
 
-| Resource | Type | Time | Link |
-|----------|------|------|------|
-| Container Probes | Official Docs | 30 min | https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-probes |
-| Configure Probes | Tutorial | 30 min | https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/ |
+| Resource | Type | Time | Why This Matters | Focus While Reading | Link |
+|----------|------|------|------------------|---------------------|------|
+| Container Probes | Official Docs | 30 min | Defines lifecycle semantics for liveness/readiness/startup. | Map each probe type to failure action and traffic impact. | https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-probes |
+| Configure Probes | Tutorial | 30 min | Practical tuning examples to avoid false positives. | Practice `initialDelaySeconds`, `periodSeconds`, and threshold tuning. | https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/ |
+| Pod Lifecycle | Official Docs | 25 min | Adds context for restart policy and container states. | Connect probe failures to restart/backoff behavior in events. | https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/ |
+
+---
+
+### Optional Week 2 Labs (Recommended)
+
+These labs reinforce configuration management and policy controls before Week 3 deployment work.
+
+| Lab | Time | Goal | Done When |
+|-----|------|------|-----------|
+| 1. Config Drift Drill | 30-45 min | Learn safe ConfigMap update workflow. | You change a ConfigMap, verify stale env values, perform rollout restart, and confirm new values in Pods. |
+| 2. Secret Rotation Drill | 30-45 min | Practice secret lifecycle without exposing values. | You rotate a Secret, restart workloads, and verify app still starts with updated credentials. |
+| 3. Namespace Isolation Drill | 30 min | Enforce environment boundaries. | You create `dev` and `prod` namespaces and prove resources are scoped correctly with `-n` and `-A`. |
+| 4. Quota Enforcement Drill | 45 min | Observe real admission rejections. | You trigger a quota violation, capture the error, then apply a compliant workload successfully. |
+| 5. Probe Failure Simulation | 45 min | Understand readiness/liveness behavior under failure. | You misconfigure a probe, inspect endpoints/events, patch it, and restore readiness. |
+| 6. Incident Debug Runbook | 30 min | Build a repeatable troubleshooting sequence. | You document a short runbook using `get events`, `describe`, `logs`, and `rollout` commands. |
+| 7. Week 2 Deliverable | 30 min | Package reusable platform baseline files. | You have a `/week2` folder with `configmap.yaml`, `secret.yaml`, `namespace.yaml`, `limitrange.yaml`, `resourcequota.yaml`, and `probes.md` notes. |
+
+**Suggested command set for Labs 1-6:**
+
+```bash
+# Config and secrets
+kubectl get configmaps,secrets
+kubectl describe configmap <name>
+kubectl describe secret <name>
+kubectl rollout restart deployment/<name>
+
+# Namespace and policy checks
+kubectl get ns
+kubectl get all -n <namespace>
+kubectl describe limitrange -n <namespace>
+kubectl describe resourcequota -n <namespace>
+
+# Probe and health debugging
+kubectl get pods -o wide
+kubectl get endpoints <service-name>
+kubectl describe pod <pod-name>
+kubectl get events --sort-by=.lastTimestamp
+```
+
+**Exit criteria before Week 3:**  
+You can externalize config safely, rotate secrets without leaking values, enforce namespace limits, and debug why a Service has zero ready endpoints.
 
 ---
 
@@ -932,6 +1221,8 @@ By end of Week 2, you should be able to:
 - [ ] Organize resources with Namespaces
 - [ ] Set resource requests and limits
 - [ ] Implement health checks for your applications
+- [ ] Explain when ConfigMap/Secret updates require workload restarts
+- [ ] Debug why workloads are rejected (quota) or Services have zero ready endpoints (readiness)
 
 ---
 
